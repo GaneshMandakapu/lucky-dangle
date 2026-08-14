@@ -16,8 +16,25 @@ echo "→ Cleaning"
 rm -rf "$DIR/build"
 mkdir -p "$OUT/Contents/MacOS" "$OUT/Contents/Resources"
 
-echo "→ Compiling"
-xcrun swiftc -O "$DIR/main.swift" -o "$OUT/Contents/MacOS/$APP"
+echo "→ Compiling (universal: Apple Silicon + Intel)"
+SLICES=()
+for ARCH in arm64 x86_64; do
+  if xcrun swiftc -O -target "$ARCH-apple-macos12.0" \
+       "$DIR/main.swift" -o "$OUT/Contents/MacOS/$APP.$ARCH" 2>/dev/null; then
+    SLICES+=("$OUT/Contents/MacOS/$APP.$ARCH")
+    echo "   $ARCH ✓"
+  else
+    echo "   $ARCH — skipped (no SDK support on this machine)"
+  fi
+done
+
+if [ ${#SLICES[@]} -eq 0 ]; then
+  echo "Nothing compiled. Check that the Xcode command line tools are installed."
+  exit 1
+fi
+
+lipo -create -output "$OUT/Contents/MacOS/$APP" "${SLICES[@]}"
+rm -f "${SLICES[@]}"
 
 echo "→ Writing Info.plist"
 cat > "$OUT/Contents/Info.plist" <<'PLIST'

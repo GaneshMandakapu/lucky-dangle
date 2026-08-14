@@ -6,7 +6,6 @@
 //
 
 import AppKit
-import QuartzCore
 import Carbon.HIToolbox
 
 // ─────────────────────────────────────────────────────────────
@@ -14,37 +13,106 @@ import Carbon.HIToolbox
 // ─────────────────────────────────────────────────────────────
 
 enum Tuning {
-    static let restLength: CGFloat   = 150    // normal cord length (points)
-    static let dropLength: CGFloat   = 330    // length when the charm "drops in"
+    static let restLength: CGFloat   = 190    // normal cord length (points)
+    static let dropLength: CGFloat   = 400    // length when the charm "drops in"
     static let dropSeconds: Double   = 4.0    // how long it stays dropped
     static let gravity: CGFloat      = 2000   // higher = faster swing
-    static let damping: CGFloat      = 0.76   // fraction of speed kept per second
+    static let damping: CGFloat      = 0.9955 // closer to 1 = swings longer
     static let maxAngle: CGFloat     = 1.15   // radians, ~66°
     static let mouseDrive: CGFloat   = 0.00022
     static let mouseDriveNear: CGFloat = 0.0011
     static let breeze: CGFloat       = 1.0    // 0 = perfectly still when idle
+    static let frameRate: Double     = 60
 
-    static let lengthStiffness: CGFloat = 110  // cord in/out spring
-    static let lengthZeta: CGFloat      = 0.72 // < 1 = a little overshoot
-    static let charmLag: CGFloat        = 26   // charm swings a beat behind the cord
-    static let charmLagZeta: CGFloat    = 0.55
-    static let cordBow: CGFloat         = 7    // how much the cord trails when moving
-
-    static let fallbackFrameRate: Double = 120 // only used before macOS 14
-    static let physicsHz: CGFloat        = 240 // fixed integration step
+    // Shine
+    static let glintPeriod: CGFloat  = 4.2    // seconds between glint sweeps
+    static let glintTravel: CGFloat  = 1.15   // seconds a sweep takes
+    static let glowStrength: CGFloat = 1.0    // 0 = no halo
+    static let sparkles: Bool        = true
 }
+
+let dt: CGFloat = CGFloat(1.0 / Tuning.frameRate)
 
 @inline(__always) func clamp(_ v: CGFloat, _ lo: CGFloat, _ hi: CGFloat) -> CGFloat {
     min(max(v, lo), hi)
 }
 
-/// Point on a cubic Bézier.
-@inline(__always) func bezier(_ p0: CGPoint, _ p1: CGPoint,
-                              _ p2: CGPoint, _ p3: CGPoint, _ t: CGFloat) -> CGPoint {
-    let u = 1 - t
-    let a = u * u * u, b = 3 * u * u * t, c = 3 * u * t * t, d = t * t * t
-    return CGPoint(x: a * p0.x + b * p1.x + c * p2.x + d * p3.x,
-                   y: a * p0.y + b * p1.y + c * p2.y + d * p3.y)
+@inline(__always) func srgb(_ r: CGFloat, _ g: CGFloat, _ b: CGFloat,
+                            _ a: CGFloat = 1) -> NSColor {
+    NSColor(srgbRed: r, green: g, blue: b, alpha: a)
+}
+
+let sRGBSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
+
+// ─────────────────────────────────────────────────────────────
+// MARK: - Drawing helpers
+// ─────────────────────────────────────────────────────────────
+
+func gradient(_ stops: [(NSColor, CGFloat)]) -> CGGradient? {
+    let colors = stops.map { ($0.0.usingColorSpace(.sRGB) ?? $0.0).cgColor } as CFArray
+    return CGGradient(colorsSpace: sRGBSpace, colors: colors,
+                      locations: stops.map { $0.1 })
+}
+
+/// Fill a path with a radial gradient, lit from `center`.
+func fillRadial(_ ctx: CGContext, _ path: CGPath, center: CGPoint,
+                radius: CGFloat, _ stops: [(NSColor, CGFloat)]) {
+    guard let g = gradient(stops) else { return }
+    ctx.saveGState()
+    ctx.addPath(path)
+    ctx.clip()
+    ctx.drawRadialGradient(g, startCenter: center, startRadius: 0,
+                           endCenter: center, endRadius: radius,
+                           options: [.drawsAfterEndLocation, .drawsBeforeStartLocation])
+    ctx.restoreGState()
+}
+
+/// Fill a path with a linear gradient running along `angle`.
+func fillLinear(_ ctx: CGContext, _ path: CGPath, angle: CGFloat,
+                extent: CGFloat, _ stops: [(NSColor, CGFloat)]) {
+    guard let g = gradient(stops) else { return }
+    ctx.saveGState()
+    ctx.addPath(path)
+    ctx.clip()
+    let d = CGPoint(x: cos(angle) * extent, y: sin(angle) * extent)
+    ctx.drawLinearGradient(g, start: CGPoint(x: -d.x, y: -d.y), end: d,
+                           options: [.drawsAfterEndLocation, .drawsBeforeStartLocation])
+    ctx.restoreGState()
+}
+
+/// A soft blurred-looking specular blob (fake blur via a radial fade).
+func specular(_ ctx: CGContext, at p: CGPoint, size: CGFloat,
+              squash: CGFloat = 0.62, angle: CGFloat = -0.5, alpha: CGFloat = 0.6) {
+    guard let g = gradient([(srgb(1, 1, 1, alpha), 0),
+                            (srgb(1, 1, 1, alpha * 0.45), 0.45),
+                            (srgb(1, 1, 1, 0), 1)]) else { return }
+    ctx.saveGState()
+    ctx.translateBy(x: p.x, y: p.y)
+    ctx.rotate(by: angle)
+    ctx.scaleBy(x: 1, y: squash)
+    ctx.drawRadialGradient(g, startCenter: .zero, startRadius: 0,
+                           endCenter: .zero, endRadius: size, options: [])
+    ctx.restoreGState()
+}
+
+/// Four-point sparkle centred on the origin.
+func starPath(_ s: CGFloat) -> CGPath {
+    let p = CGMutablePath()
+    let k = s * 0.16
+    p.move(to: CGPoint(x: 0, y: s))
+    p.addQuadCurve(to: CGPoint(x: s, y: 0), control: CGPoint(x: k, y: k))
+    p.addQuadCurve(to: CGPoint(x: 0, y: -s), control: CGPoint(x: k, y: -k))
+    p.addQuadCurve(to: CGPoint(x: -s, y: 0), control: CGPoint(x: -k, y: -k))
+    p.addQuadCurve(to: CGPoint(x: 0, y: s), control: CGPoint(x: -k, y: k))
+    p.closeSubpath()
+    return p
+}
+
+/// Light state handed to the charm each frame.
+struct Shine {
+    let time: CGFloat
+    let energy: CGFloat   // 0…1, how hard it's swinging
+    let enabled: Bool
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -63,46 +131,153 @@ enum Charm: String, CaseIterable {
         }
     }
 
-    var radius: CGFloat {
+    var baseRadius: CGFloat {
         switch self {
-        case .nazar: return 34
-        case .clover: return 30
-        case .horseshoe: return 32
-        case .knot: return 30
+        case .nazar: return 58
+        case .clover: return 52
+        case .horseshoe: return 54
+        case .knot: return 52
         }
     }
 
-    func draw(in ctx: CGContext) {
-        let r = radius
+    /// Colour of the glow halo.
+    var tint: NSColor {
         switch self {
-        case .nazar:     Charm.drawNazar(ctx, r)
-        case .clover:    Charm.drawClover(ctx, r)
-        case .horseshoe: Charm.drawHorseshoe(ctx, r)
-        case .knot:      Charm.drawKnot(ctx, r)
+        case .nazar:     return srgb(0.25, 0.50, 1.00)
+        case .clover:    return srgb(0.35, 0.85, 0.35)
+        case .horseshoe: return srgb(1.00, 0.82, 0.30)
+        case .knot:      return srgb(1.00, 0.32, 0.26)
         }
     }
 
-    // Each charm draws centred on (0,0), +y is up, already rotated with the cord.
+    // MARK: Full render
 
-    private static func circle(_ ctx: CGContext, _ r: CGFloat, _ c: NSColor,
-                               _ dx: CGFloat = 0, _ dy: CGFloat = 0) {
-        ctx.setFillColor(c.cgColor)
-        ctx.fillEllipse(in: CGRect(x: dx - r, y: dy - r, width: r * 2, height: r * 2))
+    func draw(in ctx: CGContext, r: CGFloat, shine: Shine) {
+        let sil = silhouette(r)
+        drawShadowAndGlow(ctx, sil, r, shine)
+        drawBody(ctx, r)
+        if shine.enabled {
+            drawGlint(ctx, sil, r, shine)
+            if Tuning.sparkles { drawSparkles(ctx, r, shine) }
+        }
     }
 
-    private static func drawNazar(_ ctx: CGContext, _ r: CGFloat) {
-        circle(ctx, r,        NSColor(srgbRed: 0.06, green: 0.19, blue: 0.74, alpha: 1))
-        circle(ctx, r * 0.66, NSColor.white)
-        circle(ctx, r * 0.44, NSColor(srgbRed: 0.42, green: 0.75, blue: 0.93, alpha: 1))
-        circle(ctx, r * 0.20, NSColor.black)
-        ctx.setFillColor(NSColor(white: 1, alpha: 0.35).cgColor)
-        ctx.fillEllipse(in: CGRect(x: -r * 0.62, y: r * 0.24,
-                                   width: r * 0.34, height: r * 0.22))
+    // MARK: Silhouette — used for the glow, the glint clip and the halo
+
+    func silhouette(_ r: CGFloat) -> CGPath {
+        let p = CGMutablePath()
+        switch self {
+        case .nazar:
+            p.addEllipse(in: CGRect(x: -r, y: -r, width: r * 2, height: r * 2))
+        case .clover:
+            for i in 0..<4 {
+                let t = CGAffineTransform(rotationAngle: CGFloat(i) * .pi / 2)
+                p.addEllipse(in: CGRect(x: -r * 0.33, y: r * 0.10,
+                                        width: r * 0.66, height: r * 0.86),
+                             transform: t)
+            }
+            p.addEllipse(in: CGRect(x: -r * 0.16, y: -r * 0.16,
+                                    width: r * 0.32, height: r * 0.32))
+        case .horseshoe:
+            let arc = CGMutablePath()
+            arc.addArc(center: .zero, radius: r * 0.62,
+                       startAngle: -0.42, endAngle: .pi + 0.42, clockwise: false)
+            return arc.copy(strokingWithWidth: r * 0.34, lineCap: .round,
+                            lineJoin: .round, miterLimit: 10)
+        case .knot:
+            let t = CGAffineTransform(rotationAngle: .pi / 4)
+            p.addRoundedRect(in: CGRect(x: -r * 0.60, y: -r * 0.60,
+                                        width: r * 1.2, height: r * 1.2),
+                             cornerWidth: r * 0.30, cornerHeight: r * 0.30,
+                             transform: t)
+        }
+        return p
     }
 
-    private static func drawClover(_ ctx: CGContext, _ r: CGFloat) {
-        // stem
-        ctx.setStrokeColor(NSColor(srgbRed: 0.16, green: 0.42, blue: 0.16, alpha: 1).cgColor)
+    // MARK: Depth — drop shadow plus a coloured halo
+
+    private func drawShadowAndGlow(_ ctx: CGContext, _ sil: CGPath,
+                                   _ r: CGFloat, _ shine: Shine) {
+        ctx.saveGState()
+        ctx.setShadow(offset: CGSize(width: 0, height: -4), blur: 12,
+                      color: srgb(0, 0, 0, 0.30).cgColor)
+        ctx.setFillColor(srgb(0, 0, 0, 1).cgColor)
+        ctx.addPath(sil)
+        ctx.fillPath()
+        ctx.restoreGState()
+
+        guard shine.enabled, Tuning.glowStrength > 0 else { return }
+        let pulse = 0.5 + 0.5 * sin(shine.time * 1.6)
+        let a = (0.30 + 0.22 * pulse + 0.28 * shine.energy) * Tuning.glowStrength
+        ctx.saveGState()
+        ctx.setShadow(offset: .zero, blur: 16 + 14 * shine.energy + 6 * pulse,
+                      color: tint.withAlphaComponent(min(a, 0.85)).cgColor)
+        ctx.setFillColor(tint.cgColor)
+        ctx.addPath(sil)
+        ctx.fillPath()
+        ctx.restoreGState()
+    }
+
+    // MARK: Bodies
+
+    private func drawBody(_ ctx: CGContext, _ r: CGFloat) {
+        switch self {
+        case .nazar:     drawNazar(ctx, r)
+        case .clover:    drawClover(ctx, r)
+        case .horseshoe: drawHorseshoe(ctx, r)
+        case .knot:      drawKnot(ctx, r)
+        }
+    }
+
+    private func drawNazar(_ ctx: CGContext, _ r: CGFloat) {
+        let lit = CGPoint(x: -r * 0.34, y: r * 0.34)
+
+        let glass = CGPath(ellipseIn: CGRect(x: -r, y: -r, width: r * 2, height: r * 2),
+                           transform: nil)
+        fillRadial(ctx, glass, center: lit, radius: r * 1.9,
+                   [(srgb(0.34, 0.56, 1.00), 0.00),
+                    (srgb(0.11, 0.30, 0.88), 0.42),
+                    (srgb(0.04, 0.13, 0.58), 0.80),
+                    (srgb(0.02, 0.07, 0.36), 1.00)])
+
+        let white = CGPath(ellipseIn: CGRect(x: -r * 0.66, y: -r * 0.66,
+                                             width: r * 1.32, height: r * 1.32),
+                           transform: nil)
+        fillRadial(ctx, white, center: CGPoint(x: -r * 0.2, y: r * 0.2), radius: r * 1.1,
+                   [(srgb(1, 1, 1), 0), (srgb(0.94, 0.96, 0.99), 0.6),
+                    (srgb(0.82, 0.86, 0.92), 1)])
+
+        let iris = CGPath(ellipseIn: CGRect(x: -r * 0.44, y: -r * 0.44,
+                                            width: r * 0.88, height: r * 0.88),
+                          transform: nil)
+        fillRadial(ctx, iris, center: CGPoint(x: -r * 0.14, y: r * 0.16), radius: r * 0.8,
+                   [(srgb(0.62, 0.88, 1.00), 0), (srgb(0.36, 0.72, 0.94), 0.5),
+                    (srgb(0.13, 0.44, 0.78), 1)])
+
+        let pupil = CGPath(ellipseIn: CGRect(x: -r * 0.20, y: -r * 0.20,
+                                             width: r * 0.40, height: r * 0.40),
+                           transform: nil)
+        fillRadial(ctx, pupil, center: CGPoint(x: -r * 0.06, y: r * 0.07), radius: r * 0.4,
+                   [(srgb(0.16, 0.17, 0.22), 0), (srgb(0.02, 0.02, 0.05), 1)])
+
+        // inner rim shading, then the glass hot-spots
+        ctx.saveGState()
+        ctx.addPath(glass)
+        ctx.clip()
+        ctx.setStrokeColor(srgb(0, 0, 0, 0.28).cgColor)
+        ctx.setLineWidth(r * 0.10)
+        ctx.addPath(glass)
+        ctx.strokePath()
+        ctx.restoreGState()
+
+        specular(ctx, at: CGPoint(x: -r * 0.44, y: r * 0.46), size: r * 0.40,
+                 squash: 0.55, angle: -0.55, alpha: 0.75)
+        specular(ctx, at: CGPoint(x: r * 0.38, y: -r * 0.46), size: r * 0.22,
+                 squash: 0.6, angle: -0.5, alpha: 0.35)
+    }
+
+    private func drawClover(_ ctx: CGContext, _ r: CGFloat) {
+        ctx.setStrokeColor(srgb(0.14, 0.40, 0.15).cgColor)
         ctx.setLineWidth(max(2, r * 0.09))
         ctx.setLineCap(.round)
         ctx.beginPath()
@@ -112,80 +287,189 @@ enum Charm: String, CaseIterable {
                      control2: CGPoint(x: r * 0.25, y: -r * 0.7))
         ctx.strokePath()
 
-        // four leaves
         for i in 0..<4 {
             ctx.saveGState()
             ctx.rotate(by: CGFloat(i) * .pi / 2)
-            let leaf = CGRect(x: -r * 0.33, y: r * 0.10, width: r * 0.66, height: r * 0.86)
-            ctx.setFillColor(NSColor(srgbRed: 0.24, green: 0.62, blue: 0.24, alpha: 1).cgColor)
-            ctx.fillEllipse(in: leaf)
-            ctx.setFillColor(NSColor(white: 1, alpha: 0.18).cgColor)
-            ctx.fillEllipse(in: leaf.insetBy(dx: r * 0.20, dy: r * 0.28)
-                                    .offsetBy(dx: -r * 0.05, dy: r * 0.10))
+            let leafRect = CGRect(x: -r * 0.33, y: r * 0.10,
+                                  width: r * 0.66, height: r * 0.86)
+            let leaf = CGPath(ellipseIn: leafRect, transform: nil)
+            fillRadial(ctx, leaf, center: CGPoint(x: -r * 0.10, y: r * 0.42),
+                       radius: r * 0.75,
+                       [(srgb(0.52, 0.86, 0.40), 0), (srgb(0.26, 0.66, 0.26), 0.55),
+                        (srgb(0.11, 0.42, 0.14), 1)])
+            // vein
+            ctx.setStrokeColor(srgb(0.09, 0.34, 0.11, 0.5).cgColor)
+            ctx.setLineWidth(max(1, r * 0.035))
+            ctx.beginPath()
+            ctx.move(to: CGPoint(x: 0, y: r * 0.16))
+            ctx.addLine(to: CGPoint(x: 0, y: r * 0.88))
+            ctx.strokePath()
+            specular(ctx, at: CGPoint(x: -r * 0.12, y: r * 0.62), size: r * 0.20,
+                     squash: 0.7, angle: 0.3, alpha: 0.45)
             ctx.restoreGState()
         }
-        circle(ctx, r * 0.13, NSColor(srgbRed: 0.16, green: 0.45, blue: 0.16, alpha: 1))
+
+        let hub = CGPath(ellipseIn: CGRect(x: -r * 0.15, y: -r * 0.15,
+                                           width: r * 0.30, height: r * 0.30),
+                         transform: nil)
+        fillRadial(ctx, hub, center: CGPoint(x: -r * 0.04, y: r * 0.05), radius: r * 0.3,
+                   [(srgb(0.34, 0.70, 0.30), 0), (srgb(0.10, 0.36, 0.12), 1)])
     }
 
-    private static func drawHorseshoe(_ ctx: CGContext, _ r: CGFloat) {
-        let ring = r * 0.62
-        ctx.setLineWidth(r * 0.34)
-        ctx.setLineCap(.round)
-        ctx.setStrokeColor(NSColor(srgbRed: 0.79, green: 0.64, blue: 0.16, alpha: 1).cgColor)
-        ctx.beginPath()
-        ctx.addArc(center: .zero, radius: ring,
-                   startAngle: -0.42, endAngle: .pi + 0.42, clockwise: false)
-        ctx.strokePath()
+    private func drawHorseshoe(_ ctx: CGContext, _ r: CGFloat) {
+        let sil = silhouette(r)
+        fillLinear(ctx, sil, angle: 1.15, extent: r,
+                   [(srgb(1.00, 0.93, 0.66), 0.00),
+                    (srgb(0.93, 0.76, 0.28), 0.35),
+                    (srgb(0.72, 0.53, 0.12), 0.70),
+                    (srgb(0.52, 0.36, 0.07), 1.00)])
 
-        // highlight
+        // polished inner band
+        ctx.saveGState()
+        ctx.addPath(sil)
+        ctx.clip()
         ctx.setLineWidth(r * 0.10)
-        ctx.setStrokeColor(NSColor(white: 1, alpha: 0.30).cgColor)
+        ctx.setLineCap(.round)
+        ctx.setStrokeColor(srgb(1, 0.98, 0.86, 0.55).cgColor)
         ctx.beginPath()
-        ctx.addArc(center: .zero, radius: ring + r * 0.10,
-                   startAngle: 0.5, endAngle: .pi - 0.5, clockwise: false)
+        ctx.addArc(center: .zero, radius: r * 0.70,
+                   startAngle: 0.30, endAngle: .pi - 0.30, clockwise: false)
         ctx.strokePath()
+        ctx.setStrokeColor(srgb(0.35, 0.24, 0.04, 0.45).cgColor)
+        ctx.beginPath()
+        ctx.addArc(center: .zero, radius: r * 0.50,
+                   startAngle: 0.20, endAngle: .pi - 0.20, clockwise: false)
+        ctx.strokePath()
+        ctx.restoreGState()
 
         // nail holes
-        ctx.setFillColor(NSColor(white: 0.15, alpha: 0.55).cgColor)
         for i in 0..<7 {
             let a = -0.2 + (CGFloat(i) / 6.0) * (.pi + 0.4)
-            let p = CGPoint(x: cos(a) * ring, y: sin(a) * ring)
-            ctx.fillEllipse(in: CGRect(x: p.x - r * 0.055, y: p.y - r * 0.055,
-                                       width: r * 0.11, height: r * 0.11))
+            let p = CGPoint(x: cos(a) * r * 0.62, y: sin(a) * r * 0.62)
+            let hole = CGPath(ellipseIn: CGRect(x: p.x - r * 0.058, y: p.y - r * 0.058,
+                                                width: r * 0.116, height: r * 0.116),
+                              transform: nil)
+            fillRadial(ctx, hole, center: CGPoint(x: p.x, y: p.y + r * 0.03),
+                       radius: r * 0.12,
+                       [(srgb(0.30, 0.21, 0.05), 0), (srgb(0.10, 0.07, 0.01), 1)])
         }
     }
 
-    private static func drawKnot(_ ctx: CGContext, _ r: CGFloat) {
-        // tassel
-        ctx.setStrokeColor(NSColor(srgbRed: 0.66, green: 0.13, blue: 0.11, alpha: 1).cgColor)
+    private func drawKnot(_ ctx: CGContext, _ r: CGFloat) {
+        ctx.setStrokeColor(srgb(0.62, 0.11, 0.10).cgColor)
         ctx.setLineWidth(max(1.5, r * 0.07))
         ctx.setLineCap(.round)
-        for dx in [-r * 0.14, 0, r * 0.14] {
+        for dx in [-r * 0.16, 0, r * 0.16] {
             ctx.beginPath()
             ctx.move(to: CGPoint(x: dx * 0.4, y: -r * 0.5))
             ctx.addLine(to: CGPoint(x: dx, y: -r * 1.15))
             ctx.strokePath()
         }
 
-        ctx.saveGState()
-        ctx.rotate(by: .pi / 4)
+        let t = CGAffineTransform(rotationAngle: .pi / 4)
         let outer = CGPath(roundedRect: CGRect(x: -r * 0.60, y: -r * 0.60,
                                                width: r * 1.2, height: r * 1.2),
                            cornerWidth: r * 0.30, cornerHeight: r * 0.30, transform: nil)
         let inner = CGPath(roundedRect: CGRect(x: -r * 0.20, y: -r * 0.20,
                                                width: r * 0.4, height: r * 0.4),
                            cornerWidth: r * 0.12, cornerHeight: r * 0.12, transform: nil)
-        ctx.setFillColor(NSColor(srgbRed: 0.78, green: 0.16, blue: 0.14, alpha: 1).cgColor)
-        ctx.beginPath()
+
+        ctx.saveGState()
+        ctx.concatenate(t)
         ctx.addPath(outer)
         ctx.addPath(inner)
-        ctx.fillPath(using: .evenOdd)
+        ctx.clip(using: .evenOdd)
+        if let g = gradient([(srgb(1.00, 0.44, 0.36), 0.00),
+                             (srgb(0.85, 0.19, 0.16), 0.50),
+                             (srgb(0.52, 0.06, 0.06), 1.00)]) {
+            ctx.drawRadialGradient(g, startCenter: CGPoint(x: -r * 0.25, y: r * 0.25),
+                                   startRadius: 0,
+                                   endCenter: CGPoint(x: -r * 0.25, y: r * 0.25),
+                                   endRadius: r * 1.4,
+                                   options: [.drawsAfterEndLocation])
+        }
+        ctx.restoreGState()
 
-        ctx.setStrokeColor(NSColor(srgbRed: 0.95, green: 0.78, blue: 0.35, alpha: 0.9).cgColor)
-        ctx.setLineWidth(max(1, r * 0.05))
+        ctx.saveGState()
+        ctx.concatenate(t)
+        ctx.setStrokeColor(srgb(1.00, 0.85, 0.45, 0.95).cgColor)
+        ctx.setLineWidth(max(1, r * 0.055))
         ctx.addPath(outer)
         ctx.strokePath()
+        ctx.setStrokeColor(srgb(1.00, 0.85, 0.45, 0.6).cgColor)
+        ctx.addPath(inner)
+        ctx.strokePath()
         ctx.restoreGState()
+
+        specular(ctx, at: CGPoint(x: -r * 0.26, y: r * 0.30), size: r * 0.30,
+                 squash: 0.55, angle: -0.7, alpha: 0.5)
+    }
+
+    // MARK: Shimmer — a band of light sweeping across the charm
+
+    private func drawGlint(_ ctx: CGContext, _ sil: CGPath,
+                           _ r: CGFloat, _ shine: Shine) {
+        // sweeps more often the harder it swings
+        let period = Tuning.glintPeriod - 2.2 * shine.energy
+        let phase = shine.time.truncatingRemainder(dividingBy: max(period, 1.0))
+        guard phase < Tuning.glintTravel else { return }
+
+        let p = phase / Tuning.glintTravel                 // 0…1 across the charm
+        let ease = sin(p * .pi)                            // fade in and out
+        let intensity = (0.45 + 0.35 * shine.energy) * ease
+        let x = (p * 2 - 1) * r * 1.9
+
+        guard let g = gradient([(srgb(1, 1, 1, 0), 0),
+                                (srgb(1, 1, 1, intensity * 0.55), 0.42),
+                                (srgb(1, 1, 1, intensity), 0.5),
+                                (srgb(1, 1, 1, intensity * 0.55), 0.58),
+                                (srgb(1, 1, 1, 0), 1)]) else { return }
+
+        ctx.saveGState()
+        ctx.addPath(sil)
+        ctx.clip()
+        ctx.setBlendMode(.plusLighter)
+        ctx.rotate(by: -0.62)                              // diagonal band
+        let w = r * 0.85
+        ctx.drawLinearGradient(g,
+                               start: CGPoint(x: x - w, y: 0),
+                               end: CGPoint(x: x + w, y: 0),
+                               options: [])
+        ctx.restoreGState()
+
+        // the leading edge throws a spark
+        if p > 0.35 && p < 0.75 {
+            ctx.saveGState()
+            ctx.setBlendMode(.plusLighter)
+            ctx.translateBy(x: x * 0.5, y: r * 0.34)
+            ctx.rotate(by: -0.62)
+            ctx.setFillColor(srgb(1, 1, 1, intensity * 0.9).cgColor)
+            ctx.addPath(starPath(r * 0.34))
+            ctx.fillPath()
+            ctx.restoreGState()
+        }
+    }
+
+    private func drawSparkles(_ ctx: CGContext, _ r: CGFloat, _ shine: Shine) {
+        let spots: [(CGFloat, CGFloat, CGFloat, CGFloat)] = [
+            (-0.62,  0.58, 0.26, 0.0),
+            ( 0.70,  0.14, 0.20, 1.9),
+            ( 0.18, -0.72, 0.17, 3.4),
+        ]
+        for (sx, sy, scale, offset) in spots {
+            let cycle: CGFloat = 3.1
+            let t = (shine.time + offset).truncatingRemainder(dividingBy: cycle)
+            guard t < 0.8 else { continue }
+            let a = sin(t / 0.8 * .pi)
+            ctx.saveGState()
+            ctx.setBlendMode(.plusLighter)
+            ctx.translateBy(x: sx * r, y: sy * r)
+            ctx.rotate(by: t * 1.2)
+            ctx.setFillColor(srgb(1, 1, 1, a * (0.55 + 0.35 * shine.energy)).cgColor)
+            ctx.addPath(starPath(r * scale * (0.6 + 0.4 * a)))
+            ctx.fillPath()
+            ctx.restoreGState()
+        }
     }
 }
 
@@ -198,14 +482,13 @@ final class CharmView: NSView {
     weak var panel: NSPanel?
 
     var charm: Charm = .nazar { didSet { needsDisplay = true } }
+    var sizeScale: CGFloat = 1.0 { didSet { needsDisplay = true } }
+    var shimmer: Bool = true { didSet { needsDisplay = true } }
 
     private var theta: CGFloat = 0.10          // angle from vertical (rad)
     private var omega: CGFloat = 0             // angular velocity (rad/s)
     private var length: CGFloat = Tuning.restLength
-    private var lengthVel: CGFloat = 0
     private var targetLength: CGFloat = Tuning.restLength
-    private var charmAngle: CGFloat = 0.10     // charm's own angle, trails `theta`
-    private var charmAngleVel: CGFloat = 0
     private var time: CGFloat = 0
     private var prevMouse: CGPoint?
     private var dragging = false
@@ -213,12 +496,8 @@ final class CharmView: NSView {
     private var dragMoved: CGFloat = 0
     private var dropUntil: Date?
 
-    private var lastTick: CFTimeInterval = 0
-    private var accumulator: CGFloat = 0
-    private let fixedDT: CGFloat = 1 / Tuning.physicsHz
-
     private var anchor: CGPoint { CGPoint(x: bounds.midX, y: bounds.maxY - 2) }
-    private var bobRadius: CGFloat { charm.radius }
+    private var bobRadius: CGFloat { charm.baseRadius * sizeScale }
     private var bobCenter: CGPoint {
         CGPoint(x: anchor.x + sin(theta) * length,
                 y: anchor.y - cos(theta) * length)
@@ -229,61 +508,36 @@ final class CharmView: NSView {
 
     // MARK: Physics tick
 
-    /// Called once per display refresh; integrates physics on a fixed step so the
-    /// motion is identical at 60 Hz and 120 Hz.
     func step() {
-        let now = CACurrentMediaTime()
-        if lastTick == 0 { lastTick = now }
-        let elapsed = CGFloat(min(now - lastTick, 0.1))   // clamp after a stall
-        lastTick = now
+        time += dt
 
         if let until = dropUntil, Date() >= until {
             dropUntil = nil
             targetLength = Tuning.restLength
         }
-
-        // Mouse stirs the air. Impulse-based, so it belongs outside the fixed loop.
-        let m = NSEvent.mouseLocation
-        if !dragging, let prev = prevMouse, let win = panel {
-            let dx = m.x - prev.x
-            let a = CGPoint(x: win.frame.origin.x + anchor.x,
-                            y: win.frame.origin.y + anchor.y)
-            let dist = hypot(m.x - a.x, m.y - a.y)
-            let prox = max(0, 1 - dist / 900)
-            let drive = clamp(dx, -60, 60)
-                * (Tuning.mouseDrive + Tuning.mouseDriveNear * prox)
-            omega += drive / max(length / 200, 0.5)
-        }
-        prevMouse = m
-
-        accumulator += elapsed
-        while accumulator >= fixedDT {
-            integrate(fixedDT)
-            accumulator -= fixedDT
-        }
-
-        updateClickThrough()
-        needsDisplay = true
-    }
-
-    private func integrate(_ h: CGFloat) {
-        time += h
-
-        // cord length: spring instead of a lerp, so drops land with a soft bounce
-        let k = Tuning.lengthStiffness
-        let c = 2 * sqrt(k) * Tuning.lengthZeta
-        lengthVel += ((targetLength - length) * k - lengthVel * c) * h
-        length += lengthVel * h
+        length += (targetLength - length) * 0.10
 
         if !dragging {
-            omega += -(Tuning.gravity / max(length, 40)) * sin(theta) * h
+            omega += -(Tuning.gravity / max(length, 40)) * sin(theta) * dt
 
-            // a little air movement so it never looks dead
-            omega += (sin(time * 0.53) * 0.021 + sin(time * 0.17 + 1.3) * 0.012)
-                     * Tuning.breeze * h
+            omega += (sin(time * 0.53) * 0.00035 + sin(time * 0.17 + 1.3) * 0.0002)
+                     * Tuning.breeze
 
-            omega *= pow(Tuning.damping, h)
-            theta += omega * h
+            let m = NSEvent.mouseLocation
+            if let prev = prevMouse, let win = panel {
+                let dx = m.x - prev.x
+                let a = CGPoint(x: win.frame.origin.x + anchor.x,
+                                y: win.frame.origin.y + anchor.y)
+                let dist = hypot(m.x - a.x, m.y - a.y)
+                let prox = max(0, 1 - dist / 900)
+                let drive = clamp(dx, -60, 60)
+                    * (Tuning.mouseDrive + Tuning.mouseDriveNear * prox)
+                omega += drive / max(length / 200, 0.5)
+            }
+            prevMouse = m
+
+            omega *= Tuning.damping
+            theta += omega * dt
 
             if abs(theta) > Tuning.maxAngle {
                 theta = theta > 0 ? Tuning.maxAngle : -Tuning.maxAngle
@@ -291,11 +545,8 @@ final class CharmView: NSView {
             }
         }
 
-        // the charm hangs off the cord end and lags it slightly
-        let ck = Tuning.charmLag
-        let cc = 2 * sqrt(ck) * Tuning.charmLagZeta
-        charmAngleVel += ((theta - charmAngle) * ck - charmAngleVel * cc) * h
-        charmAngle += charmAngleVel * h
+        updateClickThrough()
+        needsDisplay = true
     }
 
     /// Click-through everywhere except right on the charm.
@@ -327,11 +578,10 @@ final class CharmView: NSView {
         let dx = p.x - anchor.x
         let dy = max(anchor.y - p.y, 8)
         let newTheta = clamp(atan2(dx, dy), -Tuning.maxAngle, Tuning.maxAngle)
-        omega = (newTheta - theta) * 60 * 0.7
+        omega = (newTheta - theta) * CGFloat(Tuning.frameRate) * 0.7
         theta = newTheta
         targetLength = clamp(hypot(dx, dy), Tuning.restLength * 0.7, Tuning.dropLength)
         length = targetLength
-        lengthVel = 0
     }
 
     override func mouseUp(with event: NSEvent) {
@@ -360,49 +610,50 @@ final class CharmView: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         guard let ctx = NSGraphicsContext.current?.cgContext else { return }
-        ctx.setShouldAntialias(true)
-        ctx.interpolationQuality = .high
-
         let a = anchor
         let b = bobCenter
+        let r = bobRadius
         let dir = CGPoint(x: sin(theta), y: -cos(theta))
-        let perp = CGPoint(x: cos(theta), y: sin(theta))
-        let span = length - bobRadius * 0.85
-        let cordEnd = CGPoint(x: a.x + dir.x * span, y: a.y + dir.y * span)
+        let cordEnd = CGPoint(x: a.x + dir.x * (length - r * 0.85),
+                              y: a.y + dir.y * (length - r * 0.85))
+        let energy = min(1, abs(omega) / 2.2)
+        let shine = Shine(time: time, energy: energy, enabled: shimmer)
 
-        // the cord trails behind the swing instead of staying a rigid stick
-        let bow = clamp(-omega * Tuning.cordBow, -16, 16)
-        let c1 = CGPoint(x: a.x + dir.x * span * 0.33 + perp.x * bow * 0.7,
-                         y: a.y + dir.y * span * 0.33 + perp.y * bow * 0.7)
-        let c2 = CGPoint(x: a.x + dir.x * span * 0.70 + perp.x * bow,
-                         y: a.y + dir.y * span * 0.70 + perp.y * bow)
-
-        ctx.setStrokeColor(NSColor(srgbRed: 0.61, green: 0.47, blue: 0.16, alpha: 1).cgColor)
-        ctx.setLineWidth(1.6)
+        // cord — dark core with a lit edge
         ctx.setLineCap(.round)
+        ctx.setStrokeColor(srgb(0.42, 0.31, 0.09).cgColor)
+        ctx.setLineWidth(2.6)
         ctx.beginPath()
         ctx.move(to: a)
-        ctx.addCurve(to: cordEnd, control1: c1, control2: c2)
+        ctx.addLine(to: cordEnd)
+        ctx.strokePath()
+        ctx.setStrokeColor(srgb(0.93, 0.79, 0.40, 0.85).cgColor)
+        ctx.setLineWidth(1.0)
+        ctx.beginPath()
+        ctx.move(to: CGPoint(x: a.x - 0.5, y: a.y))
+        ctx.addLine(to: CGPoint(x: cordEnd.x - 0.5, y: cordEnd.y))
         ctx.strokePath()
 
-        // beads ride along the curve
-        for (t, rad, color) in [(CGFloat(0.62), CGFloat(4.5), NSColor.white),
-                               (CGFloat(0.72), CGFloat(6.5),
-                                NSColor(srgbRed: 0.06, green: 0.19, blue: 0.74, alpha: 1)),
-                               (CGFloat(0.82), CGFloat(4.5), NSColor.white)] {
-            let p = bezier(a, c1, c2, cordEnd, t)
-            ctx.setFillColor(color.cgColor)
-            ctx.fillEllipse(in: CGRect(x: p.x - rad, y: p.y - rad,
-                                       width: rad * 2, height: rad * 2))
+        // beads
+        let beads: [(CGFloat, CGFloat, [(NSColor, CGFloat)])] = [
+            (0.60, r * 0.13, [(srgb(1, 1, 1), 0), (srgb(0.78, 0.80, 0.86), 1)]),
+            (0.71, r * 0.19, [(srgb(0.42, 0.62, 1.00), 0), (srgb(0.05, 0.14, 0.60), 1)]),
+            (0.82, r * 0.13, [(srgb(1, 1, 1), 0), (srgb(0.78, 0.80, 0.86), 1)]),
+        ]
+        for (t, rad, stops) in beads {
+            let p = CGPoint(x: a.x + (cordEnd.x - a.x) * t, y: a.y + (cordEnd.y - a.y) * t)
+            let path = CGPath(ellipseIn: CGRect(x: p.x - rad, y: p.y - rad,
+                                                width: rad * 2, height: rad * 2),
+                              transform: nil)
+            fillRadial(ctx, path, center: CGPoint(x: p.x - rad * 0.35, y: p.y + rad * 0.35),
+                       radius: rad * 1.8, stops)
         }
 
         // charm
         ctx.saveGState()
-        ctx.setShadow(offset: CGSize(width: 0, height: -3), blur: 9,
-                      color: NSColor(white: 0, alpha: 0.28).cgColor)
         ctx.translateBy(x: b.x, y: b.y)
-        ctx.rotate(by: -charmAngle)
-        charm.draw(in: ctx)
+        ctx.rotate(by: -theta)
+        charm.draw(in: ctx, r: r, shine: shine)
         ctx.restoreGState()
     }
 }
@@ -439,8 +690,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var view: CharmView!
     private var statusItem: NSStatusItem!
     private var timer: Timer?
-    private var displayLink: Any?
     private var hotKey: HotKey?
+
+    private let sizes: [(String, CGFloat)] = [("Small", 0.75), ("Medium", 1.0),
+                                              ("Large", 1.3), ("Huge", 1.6)]
 
     private var xFraction: CGFloat {
         get {
@@ -453,12 +706,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
 
-        let w: CGFloat = 720
-        let h: CGFloat = Tuning.dropLength + 120
+        let w: CGFloat = 980
+        let h: CGFloat = Tuning.dropLength + 230
 
         view = CharmView(frame: NSRect(x: 0, y: 0, width: w, height: h))
-        if let saved = UserDefaults.standard.string(forKey: "charm"),
-           let c = Charm(rawValue: saved) { view.charm = c }
+        let defaults = UserDefaults.standard
+        if let saved = defaults.string(forKey: "charm"), let c = Charm(rawValue: saved) {
+            view.charm = c
+        }
+        if let s = defaults.object(forKey: "sizeScale") as? Double {
+            view.sizeScale = CGFloat(s)
+        }
+        if let sh = defaults.object(forKey: "shimmer") as? Bool {
+            view.shimmer = sh
+        }
 
         panel = NSPanel(contentRect: view.frame,
                         styleMask: [.borderless, .nonactivatingPanel],
@@ -481,7 +742,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         buildStatusItem()
 
-        startTicking()
+        let t = Timer(timeInterval: 1.0 / Tuning.frameRate, repeats: true) { [weak self] _ in
+            self?.view.step()
+        }
+        RunLoop.main.add(t, forMode: .common)
+        timer = t
 
         hotKey = HotKey(keyCode: UInt32(kVK_ANSI_L),
                         modifiers: UInt32(cmdKey + optionKey)) { [weak self] in
@@ -492,23 +757,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             forName: NSApplication.didChangeScreenParametersNotification,
             object: nil, queue: .main) { [weak self] _ in self?.reposition() }
     }
-
-    /// Drive the animation off the display's own refresh so every frame lands on a
-    /// vsync — smooth at 60 Hz and at 120 Hz on ProMotion.
-    private func startTicking() {
-        if #available(macOS 14.0, *) {
-            let link = view.displayLink(target: self, selector: #selector(tick))
-            link.add(to: .main, forMode: .common)
-            displayLink = link
-        } else {
-            let t = Timer(timeInterval: 1.0 / Tuning.fallbackFrameRate,
-                          repeats: true) { [weak self] _ in self?.view.step() }
-            RunLoop.main.add(t, forMode: .common)
-            timer = t
-        }
-    }
-
-    @objc private func tick() { view.step() }
 
     private func reposition() {
         guard let screen = NSScreen.main else { return }
@@ -539,6 +787,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         charmsItem.submenu = charms
         menu.addItem(charmsItem)
 
+        let sizeItem = NSMenuItem(title: "Size", action: nil, keyEquivalent: "")
+        let sizeMenu = NSMenu()
+        for (name, scale) in sizes {
+            let item = NSMenuItem(title: name,
+                                  action: #selector(pickSize(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = Double(scale)
+            item.state = abs(scale - view.sizeScale) < 0.01 ? .on : .off
+            sizeMenu.addItem(item)
+        }
+        sizeItem.submenu = sizeMenu
+        menu.addItem(sizeItem)
+
         let posItem = NSMenuItem(title: "Hang it", action: nil, keyEquivalent: "")
         let pos = NSMenu()
         for (name, frac) in [("Left", 0.14), ("Centre", 0.5), ("Right", 0.86)] {
@@ -552,6 +813,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(posItem)
 
         menu.addItem(.separator())
+
+        let shimmer = NSMenuItem(title: "Shimmer",
+                                 action: #selector(toggleShimmer(_:)), keyEquivalent: "")
+        shimmer.target = self
+        shimmer.state = view.shimmer ? .on : .off
+        menu.addItem(shimmer)
 
         let drop = NSMenuItem(title: "Drop the charm",
                               action: #selector(dropCharm), keyEquivalent: "l")
@@ -576,10 +843,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         sender.menu?.items.forEach { $0.state = ($0 === sender) ? .on : .off }
     }
 
+    @objc private func pickSize(_ sender: NSMenuItem) {
+        guard let s = sender.representedObject as? Double else { return }
+        view.sizeScale = CGFloat(s)
+        UserDefaults.standard.set(s, forKey: "sizeScale")
+        sender.menu?.items.forEach { $0.state = ($0 === sender) ? .on : .off }
+    }
+
     @objc private func pickPosition(_ sender: NSMenuItem) {
         guard let frac = sender.representedObject as? Double else { return }
         xFraction = CGFloat(frac)
         reposition()
+    }
+
+    @objc private func toggleShimmer(_ sender: NSMenuItem) {
+        view.shimmer.toggle()
+        sender.state = view.shimmer ? .on : .off
+        UserDefaults.standard.set(view.shimmer, forKey: "shimmer")
     }
 
     @objc private func dropCharm() { view.toggleDrop() }
