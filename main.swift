@@ -120,7 +120,7 @@ struct Shine {
 // ─────────────────────────────────────────────────────────────
 
 enum Charm: String, CaseIterable {
-    case nazar, clover, horseshoe, knot
+    case nazar, clover, horseshoe, knot, dog
 
     var title: String {
         switch self {
@@ -128,6 +128,7 @@ enum Charm: String, CaseIterable {
         case .clover:    return "Four-leaf clover (Ireland)"
         case .horseshoe: return "Horseshoe (Europe)"
         case .knot:      return "Lucky knot (China)"
+        case .dog:       return "Lucky dog — faithful guardian"
         }
     }
 
@@ -137,6 +138,7 @@ enum Charm: String, CaseIterable {
         case .clover: return 52
         case .horseshoe: return 54
         case .knot: return 52
+        case .dog: return 54
         }
     }
 
@@ -147,7 +149,23 @@ enum Charm: String, CaseIterable {
         case .clover:    return srgb(0.35, 0.85, 0.35)
         case .horseshoe: return srgb(1.00, 0.82, 0.30)
         case .knot:      return srgb(1.00, 0.32, 0.26)
+        case .dog:       return srgb(1.00, 0.74, 0.40)
         }
+    }
+
+    /// Head and ear geometry, shared by the silhouette and the body.
+    private static func dogHead(_ r: CGFloat) -> CGPath {
+        let p = CGMutablePath()
+        for side in [CGFloat(-1), 1] {                       // droopy ears, behind the head
+            var t = CGAffineTransform(translationX: side * r * 0.70, y: r * 0.04)
+                .rotated(by: side * -0.28)
+            p.addPath(CGPath(ellipseIn: CGRect(x: -r * 0.25, y: -r * 0.48,
+                                               width: r * 0.50, height: r * 0.96),
+                             transform: &t))
+        }
+        p.addEllipse(in: CGRect(x: -r * 0.80, y: -r * 0.73,
+                                width: r * 1.60, height: r * 1.50))
+        return p
     }
 
     // MARK: Full render
@@ -190,6 +208,8 @@ enum Charm: String, CaseIterable {
                                         width: r * 1.2, height: r * 1.2),
                              cornerWidth: r * 0.30, cornerHeight: r * 0.30,
                              transform: t)
+        case .dog:
+            return Charm.dogHead(r)
         }
         return p
     }
@@ -226,6 +246,7 @@ enum Charm: String, CaseIterable {
         case .clover:    drawClover(ctx, r)
         case .horseshoe: drawHorseshoe(ctx, r)
         case .knot:      drawKnot(ctx, r)
+        case .dog:       drawDog(ctx, r)
         }
     }
 
@@ -403,6 +424,97 @@ enum Charm: String, CaseIterable {
 
         specular(ctx, at: CGPoint(x: -r * 0.26, y: r * 0.30), size: r * 0.30,
                  squash: 0.55, angle: -0.7, alpha: 0.5)
+    }
+
+    private func drawDog(_ ctx: CGContext, _ r: CGFloat) {
+        let lit = CGPoint(x: -r * 0.34, y: r * 0.42)
+
+        // collar and tag, below the chin — drawn first so the head overlaps them
+        ctx.saveGState()
+        let collar = CGPath(roundedRect: CGRect(x: -r * 0.40, y: -r * 0.80,
+                                               width: r * 0.80, height: r * 0.24),
+                            cornerWidth: r * 0.12, cornerHeight: r * 0.12, transform: nil)
+        fillLinear(ctx, collar, angle: .pi / 2, extent: r * 0.2,
+                   [(srgb(0.86, 0.20, 0.18), 0), (srgb(0.52, 0.07, 0.07), 1)])
+        let tag = CGPath(ellipseIn: CGRect(x: -r * 0.15, y: -r * 0.98,
+                                           width: r * 0.30, height: r * 0.30),
+                         transform: nil)
+        fillRadial(ctx, tag, center: CGPoint(x: -r * 0.05, y: -r * 0.78), radius: r * 0.30,
+                   [(srgb(1.00, 0.93, 0.60), 0), (srgb(0.90, 0.71, 0.24), 0.6),
+                    (srgb(0.62, 0.44, 0.09), 1)])
+        ctx.restoreGState()
+
+        // ears, then head, from the shared silhouette geometry
+        for side in [CGFloat(-1), 1] {
+            var t = CGAffineTransform(translationX: side * r * 0.70, y: r * 0.04)
+                .rotated(by: side * -0.28)
+            let ear = CGPath(ellipseIn: CGRect(x: -r * 0.25, y: -r * 0.48,
+                                               width: r * 0.50, height: r * 0.96),
+                             transform: &t)
+            fillRadial(ctx, ear, center: lit, radius: r * 1.9,
+                       [(srgb(0.52, 0.33, 0.17), 0.00),
+                        (srgb(0.38, 0.23, 0.11), 0.55),
+                        (srgb(0.24, 0.13, 0.06), 1.00)])
+        }
+
+        let head = CGPath(ellipseIn: CGRect(x: -r * 0.80, y: -r * 0.73,
+                                            width: r * 1.60, height: r * 1.50),
+                          transform: nil)
+        fillRadial(ctx, head, center: lit, radius: r * 1.7,
+                   [(srgb(0.89, 0.70, 0.44), 0.00),
+                    (srgb(0.76, 0.55, 0.31), 0.45),
+                    (srgb(0.56, 0.37, 0.19), 0.82),
+                    (srgb(0.40, 0.25, 0.12), 1.00)])
+
+        // pale blaze down the forehead
+        let blaze = CGPath(ellipseIn: CGRect(x: -r * 0.15, y: -r * 0.30,
+                                             width: r * 0.30, height: r * 1.00),
+                           transform: nil)
+        fillRadial(ctx, blaze, center: CGPoint(x: 0, y: r * 0.30), radius: r * 0.6,
+                   [(srgb(0.97, 0.90, 0.76, 0.55), 0), (srgb(0.97, 0.90, 0.76, 0), 1)])
+
+        // muzzle
+        let muzzle = CGPath(ellipseIn: CGRect(x: -r * 0.45, y: -r * 0.68,
+                                              width: r * 0.90, height: r * 0.66),
+                            transform: nil)
+        fillRadial(ctx, muzzle, center: CGPoint(x: -r * 0.12, y: -r * 0.20), radius: r * 0.8,
+                   [(srgb(0.99, 0.94, 0.85), 0), (srgb(0.93, 0.85, 0.72), 0.6),
+                    (srgb(0.80, 0.69, 0.55), 1)])
+
+        // nose
+        let nose = CGPath(roundedRect: CGRect(x: -r * 0.17, y: -r * 0.20,
+                                              width: r * 0.34, height: r * 0.25),
+                          cornerWidth: r * 0.11, cornerHeight: r * 0.11, transform: nil)
+        fillRadial(ctx, nose, center: CGPoint(x: -r * 0.05, y: -r * 0.02), radius: r * 0.3,
+                   [(srgb(0.28, 0.26, 0.30), 0), (srgb(0.06, 0.05, 0.07), 1)])
+
+        // mouth
+        ctx.setStrokeColor(srgb(0.34, 0.24, 0.16, 0.85).cgColor)
+        ctx.setLineWidth(max(1, r * 0.045))
+        ctx.setLineCap(.round)
+        for side in [CGFloat(-1), 1] {
+            ctx.beginPath()
+            ctx.move(to: CGPoint(x: 0, y: -r * 0.22))
+            ctx.addQuadCurve(to: CGPoint(x: side * r * 0.20, y: -r * 0.44),
+                             control: CGPoint(x: side * r * 0.03, y: -r * 0.42))
+            ctx.strokePath()
+        }
+
+        // eyes
+        for side in [CGFloat(-1), 1] {
+            let c = CGPoint(x: side * r * 0.31, y: r * 0.26)
+            let eye = CGPath(ellipseIn: CGRect(x: c.x - r * 0.14, y: c.y - r * 0.15,
+                                               width: r * 0.28, height: r * 0.30),
+                             transform: nil)
+            fillRadial(ctx, eye, center: CGPoint(x: c.x - r * 0.04, y: c.y + r * 0.05),
+                       radius: r * 0.3,
+                       [(srgb(0.31, 0.22, 0.15), 0), (srgb(0.09, 0.05, 0.03), 1)])
+            specular(ctx, at: CGPoint(x: c.x - r * 0.05, y: c.y + r * 0.07),
+                     size: r * 0.075, squash: 0.85, angle: -0.5, alpha: 0.95)
+        }
+
+        specular(ctx, at: CGPoint(x: -r * 0.40, y: r * 0.50), size: r * 0.30,
+                 squash: 0.55, angle: -0.6, alpha: 0.45)
     }
 
     // MARK: Shimmer — a band of light sweeping across the charm
