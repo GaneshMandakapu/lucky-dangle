@@ -1,0 +1,64 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Lucky Dangle</title>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: transparent;
+      /* the window is an overlay: never show a text cursor or selection */
+      user-select: none;
+      -webkit-user-select: none;
+      cursor: default;
+    }
+    #charm { display: block; width: 100%; height: 100%; }
+  </style>
+</head>
+<body>
+  <canvas id="charm"></canvas>
+
+  <script type="module">
+    import { Dangle } from './charm.js';
+
+    const dangle = new Dangle(document.getElementById('charm'));
+
+    // Tell the main process when the pointer is on the charm so it can turn
+    // click-through off for exactly as long as it takes to grab it.
+    dangle.onHitChange = (hit) => window.dangle.setHit(hit);
+
+    const apply = (s) => {
+      if (s.charm) dangle.charm = s.charm;
+      if (typeof s.sizeScale === 'number') dangle.sizeScale = s.sizeScale;
+      if (typeof s.shimmer === 'boolean') dangle.shimmer = s.shimmer;
+    };
+    window.dangle.getSettings().then(apply);   // saved state at startup
+    window.dangle.onSettings(apply);           // live updates from the tray menu
+
+    window.dangle.onCursor((p) => { dangle.cursor = p; });
+    window.dangle.onDrop(() => dangle.toggleDrop());
+
+    // Pointer events only arrive while the charm has been made interactive.
+    const local = (e) => ({ x: e.clientX, y: dangle.height - e.clientY });
+    addEventListener('mousedown', (e) => {
+      if (dangle.pointerDown(local(e))) document.body.style.cursor = 'grabbing';
+    });
+    addEventListener('mousemove', (e) => dangle.pointerMove(local(e)));
+    addEventListener('mouseup', () => {
+      dangle.pointerUp();
+      document.body.style.cursor = 'default';
+    });
+
+    function frame(now) {
+      dangle.step(now);
+      dangle.render();
+      requestAnimationFrame(frame);
+    }
+    requestAnimationFrame(frame);
+  </script>
+</body>
+</html>

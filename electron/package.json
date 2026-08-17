@@ -1,0 +1,38 @@
+{
+  "name": "lucky-dangle",
+  "version": "1.0.0",
+  "description": "A lucky charm that hangs from the top edge of your screen.",
+  "main": "main.js",
+  "author": "GaneshMandakapu",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "dist:win": "electron-builder --win",
+    "dist:mac": "electron-builder --mac",
+    "test": "node test-physics.mjs"
+  },
+  "devDependencies": {
+    "electron": "^43.0.0",
+    "electron-builder": "^26.0.0"
+  },
+  "build": {
+    "appId": "local.luckydangle",
+    "productName": "Lucky Dangle",
+    "files": [
+      "main.js",
+      "preload.js",
+      "index.html",
+      "charm.js",
+      "tray.png",
+      "icon.png"
+    ],
+    "win": {
+      "target": "zip",
+      "icon": "icon.png"
+    },
+    "mac": {
+      "target": "dir",
+      "icon": "icon.png"
+    }
+  }
+}
